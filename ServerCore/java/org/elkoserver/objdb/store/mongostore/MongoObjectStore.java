@@ -5,7 +5,7 @@ import com.mongodb.client.FindIterable;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoDatabase;
 import com.mongodb.client.model.DBCollectionFindOptions;
-import com.mongodb.client.model.UpdateOptions;
+import com.mongodb.client.model.ReplaceOptions;
 import com.mongodb.client.result.UpdateResult;
 import org.elkoserver.foundation.boot.BootProperties;
 import org.elkoserver.json.JSONArray;
@@ -323,11 +323,21 @@ public class MongoObjectStore implements ObjectStore {
                 if (requireNew) {
                     collection.insertOne(objectToWrite);
                 } else {
-                    UpdateOptions options = new UpdateOptions();
+                    /* replaceOne, NOT updateOne($set): Elko's encoders express
+                       false/empty state by OMITTING fields (e.g. an Item's
+                       'closed' flag is only written when true), which assumes
+                       whole-document replace semantics. A $set merge leaves
+                       omitted fields stranded at their old values in the
+                       stored document — once 'closed: true' was written, no
+                       later checkpoint of the open container could ever clear
+                       it, permanently desyncing stored state from live state.
+                       replaceOne is the modern-driver API with the original
+                       replace semantics (a bare document is no longer
+                       accepted by updateOne, which is what the $set wrapper
+                       was working around). */
+                    ReplaceOptions options = new ReplaceOptions();
                     options.upsert(true);
-                    Document updateOperation = new Document();
-                    updateOperation.put("$set", objectToWrite);
-                    collection.updateOne(eq("ref", ref), updateOperation, options);
+                    collection.replaceOne(eq("ref", ref), objectToWrite, options);
                 }
             } catch (Exception e) {
                 failure = e.getMessage();
@@ -360,12 +370,9 @@ public class MongoObjectStore implements ObjectStore {
                 Document query = new Document();
                 query.put("ref", ref);
                 query.put("version", version);
-                UpdateOptions options = new UpdateOptions();
-                options.upsert(false);
-                Document updateOperation = new Document();
-                updateOperation.put("$set", objectToWrite);
+                /* replaceOne, NOT updateOne($set) — see doPut. */
                 UpdateResult result =
-                    collection.updateOne(query, updateOperation, options);
+                    collection.replaceOne(query, objectToWrite);
                 if (result.getModifiedCount() != 1) {
                     failure = "stale version number on update";
                     atomicFailure = true;
